@@ -1,0 +1,13 @@
+# Ziel-Allowlist fuer FilterDefaultDeny (siehe tinyproxy.conf).
+# Domains der in config/searxng/settings.yml aktivierten Engines.
+(^|\.)duckduckgo\.com$
+(^|\.)duck\.com$
+(^|\.)google\.com$
+(^|\.)bing\.com$
+(^|\.)startpage\.com$
+(^|\.)wikipedia\.org$
+(^|\.)wikimedia\.org$
+(^|\.)qwant\.com$
+(^|\.)mojeek\.com$
+(^|\.)brave\.com$
+(^|\.)search\.brave\.com$

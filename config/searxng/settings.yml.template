@@ -1,0 +1,43 @@
+# SearXNG-Konfiguration fuer den Einsatz hinter dem Gateway.
+# Diese Instanz ist nicht oeffentlich und wird nur vom Gateway angesprochen.
+use_default_settings: true
+
+general:
+  instance_name: "privacy-search"
+  debug: false
+  donation_url: false
+  contact_url: false
+  enable_metrics: false
+
+server:
+  # Wird vom Entrypoint des Images durch $SEARXNG_SECRET ersetzt.
+  secret_key: "ultrasecretkey"
+  base_url: false
+  # Aus: einziger Aufrufer ist das Gateway im internen Netz.
+  limiter: false
+  public_instance: false
+  image_proxy: false
+  method: "GET"
+
+search:
+  safe_search: 0
+  autocomplete: ""
+  default_lang: "de"
+  formats:
+    - json
+
+ui:
+  default_locale: de
+  infinite_scroll: false
+
+outgoing:
+  request_timeout: 6.0
+  max_request_timeout: 12.0
+  pool_connections: 100
+  pool_maxsize: 20
+  enable_http2: true
+  # Der einzige Ausgang. Ohne diesen Proxy kommt der Container nicht ins
+  # Internet - das core-Netz hat keine Route nach draussen.
+  proxies:
+    all://:
+      - http://webproxy:3128

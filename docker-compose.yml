@@ -1,0 +1,160 @@
+# Privacy-Proxy zwischen lokalem LLM (OpenWebUI) und dem Internet.
+#
+# Durchsetzung passiert ueber die Netze, nicht ueber Konvention:
+#   core    internal -> keine Route ins Internet. Gateway, Filter, SearXNG,
+#                       Valkey haengen ausschliesslich hier.
+#   egress  bridge   -> nur webproxy. Einziger Weg nach draussen.
+#   edge    bridge   -> nur edge (nginx). Nimmt Anfragen von OpenWebUI an,
+#                       baut selbst nie eine Verbindung nach aussen auf.
+#
+# Folge: Der Dienst, der die ungefilterte Anfrage sieht (gateway), kann sie
+# technisch nicht ins Internet schicken. Der Dienst, der ins Internet darf
+# (webproxy), sieht nur bereits gefilterte Anfragen.
+
+services:
+
+  edge:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    ports:
+      - "${EDGE_BIND:-127.0.0.1}:${EDGE_PORT:-8888}:8888"
+    volumes:
+      - ./edge/nginx.conf:/etc/nginx/nginx.conf:ro
+    networks:
+      - edge
+      - core
+    depends_on:
+      gateway:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://localhost:8888/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  gateway:
+    build: ./gateway
+    restart: unless-stopped
+    environment:
+      FILTER_URL: http://filter:8001
+      SEARX_URL: http://searxng:8080
+      VALKEY_URL: redis://valkey:6379/0
+      GATEWAY_BLOCK_RESPONSE: ${GATEWAY_BLOCK_RESPONSE:-inform}
+      GATEWAY_LOG_QUERIES: ${GATEWAY_LOG_QUERIES:-redacted}
+      GATEWAY_CACHE_TTL: ${GATEWAY_CACHE_TTL:-900}
+      GATEWAY_MAX_QUERY_LEN: ${GATEWAY_MAX_QUERY_LEN:-512}
+      GATEWAY_MAX_RESULTS: ${GATEWAY_MAX_RESULTS:-20}
+      GATEWAY_UPSTREAM_TIMEOUT: ${GATEWAY_UPSTREAM_TIMEOUT:-20}
+      GATEWAY_DEFAULT_LANG: ${FILTER_DEFAULT_LANG:-de}
+    networks:
+      - core
+    depends_on:
+      filter:
+        condition: service_healthy
+      valkey:
+        condition: service_started
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8000/healthz',timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  filter:
+    build:
+      context: ./filterd
+      args:
+        SPACY_DE: ${FILTER_SPACY_DE:-de_core_news_md}
+        SPACY_EN: ${FILTER_SPACY_EN:-en_core_web_md}
+    restart: unless-stopped
+    environment:
+      FILTER_POLICY: /app/config/policy.yml
+      FILTER_SPACY_DE: ${FILTER_SPACY_DE:-de_core_news_md}
+      FILTER_SPACY_EN: ${FILTER_SPACY_EN:-en_core_web_md}
+      FILTER_DEFAULT_LANG: ${FILTER_DEFAULT_LANG:-de}
+    volumes:
+      - ./config/policy.yml:/app/config/policy.yml:ro
+    networks:
+      - core
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8001/healthz',timeout=3)"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      # NER-Modelle brauchen beim Start Zeit.
+      start_period: 120s
+
+  searxng:
+    image: searxng/searxng:latest
+    restart: unless-stopped
+    environment:
+      SEARXNG_SECRET: ${SEARXNG_SECRET:?SEARXNG_SECRET fehlt - scripts/init.sh ausfuehren}
+      SEARXNG_BASE_URL: http://searxng:8080/
+      # SearXNG erreicht das Internet ausschliesslich ueber diesen Proxy.
+      HTTP_PROXY: http://webproxy:3128
+      HTTPS_PROXY: http://webproxy:3128
+      NO_PROXY: localhost,127.0.0.1
+    volumes:
+      - ./config/searxng:/etc/searxng:rw
+    networks:
+      - core
+    depends_on:
+      webproxy:
+        condition: service_started
+    # Bewusst ohne cap_drop: der SearXNG-Entrypoint setzt Rechte und wechselt
+    # den Benutzer. Haertung hier bricht das Image.
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://localhost:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  webproxy:
+    build: ./config/tinyproxy
+    restart: unless-stopped
+    networks:
+      - core
+      - egress
+    security_opt:
+      - no-new-privileges:true
+
+  valkey:
+    image: valkey/valkey:8-alpine
+    restart: unless-stopped
+    command: >
+      valkey-server
+      --save ""
+      --appendonly no
+      --maxmemory 128mb
+      --maxmemory-policy allkeys-lru
+    networks:
+      - core
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+
+networks:
+  edge:
+    driver: bridge
+  core:
+    driver: bridge
+    internal: true
+  egress:
+    driver: bridge

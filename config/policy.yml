@@ -1,0 +1,93 @@
+# Filter-Policy
+#
+# Grundgedanke: Eine Suchanfrage BESTEHT groesstenteils aus Named Entities.
+# Wer alle entfernt, bekommt unbrauchbare Ergebnisse und das System wird
+# umgangen. Deshalb kein pauschales Schwaerzen, sondern:
+#
+#   allow  -> noetig fuer brauchbare Treffer, kein Personenbezug
+#             (Orte, Organisationen, Daten, URLs)
+#   redact -> wird ersetzt, Suche laeuft weiter
+#   block  -> Anfrage geht gar nicht raus, das LLM bekommt den Grund zurueck
+#
+# Nach Aenderungen: curl -XPOST http://localhost:8001/reload  (im core-Netz)
+# bzw. `docker compose restart filter`.
+
+version: 1
+
+# Globaler Mindest-Score. Presidio-Treffer darunter werden verworfen.
+threshold: 0.45
+
+# Was mit Typen passiert, die unten nicht gelistet sind.
+default_action: redact
+
+actions:
+  # --- blockieren: direkter Personenbezug oder eindeutige Kennungen -------
+  PERSON: block
+  EMAIL_ADDRESS: block
+  PHONE_NUMBER: block
+  IBAN_CODE: block
+  CREDIT_CARD: block
+  CRYPTO: block
+  IP_ADDRESS: block
+  US_SSN: block
+  MEDICAL_LICENSE: block
+  DE_TAX_ID: block
+  DE_SOCIAL_SECURITY: block
+  DE_HEALTH_INSURANCE: block
+  DE_LICENSE_PLATE: block
+  DE_IDCARD: block
+  DE_STREET_ADDRESS: block
+
+  # --- erlauben: ohne diese Angaben ist die Suche wertlos ----------------
+  LOCATION: allow
+  GPE: allow
+  ORGANIZATION: allow
+  ORG: allow
+  NRP: allow
+  DATE_TIME: allow
+  URL: allow
+  DOMAIN_NAME: allow
+
+# Typ-spezifische Schwellen. PERSON hoeher, weil spaCy bei kurzen,
+# kleingeschriebenen Suchanfragen reihenweise falsch positiv wird.
+thresholds:
+  PERSON: 0.6
+  DE_IDCARD: 0.75
+  DE_HEALTH_INSURANCE: 0.6
+  DE_TAX_ID: 0.55
+  DATE_TIME: 0.8
+
+# Begriffe, die das NER-Modell gern faelschlich als Person/Org markiert.
+# Exakter Vergleich, klein geschrieben.
+allowlist:
+  - linux
+  - debian
+  - ubuntu
+  - python
+  - docker
+  - kubernetes
+  - nginx
+  - postgres
+  - searxng
+  - openwebui
+  - ollama
+  - claude
+  - markdown
+  - json
+  - systemd
+  - wireguard
+  - home assistant
+  - raspberry pi
+  - visual studio code
+
+# Deterministische Regeln, die immer greifen - unabhaengig vom Modell.
+# Fangen Personenbezug ab, der gar keine Named Entity ist.
+denylist:
+  - name: RELATIONAL_PERSON
+    pattern: "(?i)\\b(mein|meine|meinem|meinen|meiner|unser|unsere|unserem)\\s+(chef|chefin|arzt|ärztin|anwalt|anwältin|nachbar|nachbarin|kollege|kollegin|vermieter|vermieterin|partner|partnerin|freund|freundin|mann|frau|sohn|tochter|mutter|vater|kind)\\b"
+  - name: SELF_DISCLOSURE
+    pattern: "(?i)\\bich\\s+(heiße|heisse|wohne\\s+in|arbeite\\s+bei|bin\\s+bei)\\b"
+  - name: CREDENTIAL
+    pattern: "(?i)\\b(passwort|passwd|password|api[_\\- ]?key|secret|token|zugangsdaten)\\b\\s*[:=]\\s*\\S+"
+  - name: PRIVATE_HOSTNAME
+    pattern: "(?i)\\b[a-z0-9][a-z0-9\\-]{1,30}\\.(local|lan|intern|internal|home|fritz\\.box)\\b"
