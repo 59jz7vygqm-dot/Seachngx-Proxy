@@ -10,6 +10,23 @@ fails=0
 
 ok()   { printf '  OK    %s\n' "$1"; }
 fail() { printf '  FAIL  %s\n' "$1"; fails=$((fails+1)); }
+skip() { printf '  SKIP  %s\n' "$1"; }
+
+# Die Netzpruefungen brauchen Zugriff auf den Docker-Socket. Ohne ihn wird
+# NICHT stillschweigend "bestanden" gemeldet, sondern uebersprungen.
+DOCKER=""
+if docker compose ps >/dev/null 2>&1; then
+    DOCKER="docker"
+elif sudo docker compose ps >/dev/null 2>&1; then
+    DOCKER="sudo docker"
+fi
+
+# Fuehrt ein Kommando im Container aus und gibt dessen Ausgabe zurueck.
+# Leere Ausgabe = Pruefung nicht ausfuehrbar, nicht "bestanden".
+in_container() {
+    svc="$1"; shift
+    $DOCKER compose exec -T "$svc" "$@" 2>/dev/null
+}
 
 echo "1) Health"
 if curl -fsS "$URL/healthz" | grep -q '"status":"ok"'; then
@@ -45,27 +62,40 @@ case "$hdr" in
     *)         fail "NICHT blockiert ($hdr)" ;;
 esac
 
-echo "5) Gateway hat KEINEN Weg ins Internet"
-if docker compose exec -T gateway python -c "
-import socket,sys
+if [ -z "$DOCKER" ]; then
+    echo "5) Gateway hat KEINEN Weg ins Internet"
+    skip "kein Zugriff auf den Docker-Socket"
+    echo "6) SearXNG kommt nur ueber den WebProxy raus"
+    skip "kein Zugriff auf den Docker-Socket"
+    echo
+    echo "Netzpruefungen uebersprungen. Erneut mit: sudo sh scripts/verify.sh"
+else
+    # Der Container druckt OPEN oder CLOSED. Alles andere bedeutet, dass die
+    # Pruefung nicht lief - das wird als FAIL gewertet, nicht als Erfolg.
+    echo "5) Gateway hat KEINEN Weg ins Internet"
+    out=$(in_container gateway python -c "
+import socket
 socket.setdefaulttimeout(5)
 try:
-    socket.create_connection(('1.1.1.1', 443))
+    socket.create_connection(('1.1.1.1', 443)).close()
+    print('OPEN')
 except Exception:
-    sys.exit(0)
-sys.exit(1)
-" >/dev/null 2>&1; then
-    ok "Gateway kommt nicht raus"
-else
-    fail "Gateway erreicht das Internet - Netztrennung ist kaputt"
-fi
+    print('CLOSED')
+")
+    case "$out" in
+        *CLOSED*) ok "Gateway kommt nicht raus" ;;
+        *OPEN*)   fail "Gateway erreicht das Internet - Netztrennung ist kaputt" ;;
+        *)        fail "Pruefung nicht ausfuehrbar (Ausgabe: '$out')" ;;
+    esac
 
-echo "6) SearXNG kommt nur ueber den WebProxy raus"
-if docker compose exec -T searxng sh -c \
-   "wget --no-proxy -q -T 5 -O /dev/null https://example.com" >/dev/null 2>&1; then
-    fail "SearXNG erreicht das Internet direkt - Proxy ist umgehbar"
-else
-    ok "SearXNG hat ohne Proxy keine Route"
+    echo "6) SearXNG kommt nur ueber den WebProxy raus"
+    out=$(in_container searxng sh -c \
+        "wget --no-proxy -q -T 5 -O /dev/null https://1.1.1.1 && echo OPEN || echo CLOSED")
+    case "$out" in
+        *CLOSED*) ok "SearXNG hat ohne Proxy keine Route" ;;
+        *OPEN*)   fail "SearXNG erreicht das Internet direkt - Proxy ist umgehbar" ;;
+        *)        fail "Pruefung nicht ausfuehrbar (Ausgabe: '$out')" ;;
+    esac
 fi
 
 echo
