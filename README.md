@@ -157,6 +157,26 @@ Format ist JSON pro Zeile:
 {"event":"gateway.blocked","request_id":"a1b2c3","query":"adresse von <PERSON>","blocking_types":["PERSON"],"duration_ms":41.2}
 ```
 
+## Filterung testen
+
+Einzelne Anfrage bewerten lassen, ohne zu suchen - zeigt Aktion, Fundstellen
+mit Score und die geschwaerzte Fassung:
+
+```bash
+sh scripts/probe.sh "telefonnummer von thomas berger"
+```
+
+Am Gateway vorbei an der Chat-Oberflaeche pruefen (`X-Privacy-Filter` ist
+`allow`, `redact`, `blocked` oder `cache`):
+
+```bash
+curl -sD- -o /dev/null -G --data-urlencode "q=was verdient mein chef" \
+     http://127.0.0.1:8888/search
+```
+
+Nicht ueber das LLM testen. Das Modell interpretiert die Blockmeldung auf
+eigene Faust und sagt dann Dinge, die der Filter so nicht behauptet.
+
 ## Tests
 
 ```bash
