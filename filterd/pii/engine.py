@@ -32,7 +32,10 @@ def get_analyzer() -> AnalyzerEngine:
     )
     nlp_engine = provider.create_engine()
 
-    registry = RecognizerRegistry()
+    # supported_languages MUSS hier gesetzt werden: die Registry defaultet auf
+    # ["en"], load_predefined_recognizers() aendert das nicht, und die
+    # AnalyzerEngine prueft beide Listen auf Gleichheit.
+    registry = RecognizerRegistry(supported_languages=list(SUPPORTED_LANGUAGES))
     registry.load_predefined_recognizers(
         languages=list(SUPPORTED_LANGUAGES), nlp_engine=nlp_engine
     )
