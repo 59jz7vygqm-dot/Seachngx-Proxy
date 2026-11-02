@@ -183,7 +183,7 @@ eigene Faust und sagt dann Dinge, die der Filter so nicht behauptet.
 make test
 ```
 
-31 Unit-Tests auf Policy-Auswertung, Schwärzung, Ergebnis-Hygiene,
+34 Unit-Tests auf Policy-Auswertung, Schwärzung, Ergebnis-Hygiene,
 Cache-Schlüssel und Log-Modi. Laufen ohne Docker und ohne NLP-Modelle, weil
 `filterd/pii/policy.py` bewusst frei von Presidio-Importen ist.
 

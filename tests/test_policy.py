@@ -121,3 +121,50 @@ def test_scan_denylist_findet_mehrfach(policy):
     text = "mein chef und meine kollegin"
     found = scan_denylist(text, policy)
     assert len(found) == 2
+
+
+# --- Ueberlappung: deterministische Regel schlaegt NER ---------------------
+# Beide Faelle sind echte Fehlentscheidungen aus einem Produktivlauf gewesen.
+
+def test_kennzeichen_schlaegt_location(policy):
+    """'kennzeichen KH-AB 1234' wurde vom Modell als LOCATION durchgelassen."""
+    text = "kennzeichen KH-AB 1234 halter ermitteln"
+    d = evaluate(
+        text,
+        [
+            f("LOCATION", 12, 22, "KH-AB 1234", 0.85),
+            f("DE_LICENSE_PLATE", 12, 22, "KH-AB 1234", 0.85),
+        ],
+        policy,
+    )
+    assert d.action == ACTION_BLOCK
+    assert d.blocking_types == ["DE_LICENSE_PLATE"]
+
+
+def test_anschrift_schlaegt_location_trotz_niedrigerem_score(policy):
+    """LOCATION 0.85 darf DE_STREET_ADDRESS 0.7 nicht verdraengen."""
+    text = "Musterstrasse 12 55543 Bad Kreuznach"
+    d = evaluate(
+        text,
+        [
+            f("LOCATION", 0, 13, "Musterstrasse", 0.85),
+            f("DE_STREET_ADDRESS", 0, 16, "Musterstrasse 12", 0.7),
+            f("LOCATION", 23, 36, "Bad Kreuznach", 0.85),
+        ],
+        policy,
+    )
+    assert d.action == ACTION_BLOCK
+    assert d.blocking_types == ["DE_STREET_ADDRESS"]
+    assert d.redacted_text.startswith("<DE_STREET_ADDRESS>")
+    # Der Ort dahinter ist erlaubt und bleibt stehen.
+    assert d.redacted_text.endswith("Bad Kreuznach")
+
+
+def test_ort_allein_bleibt_erlaubt(policy):
+    """Die Verschaerfung darf reine Ortsangaben nicht mitreissen."""
+    d = evaluate(
+        "Landkreis Bad Kreuznach einwohnerzahl",
+        [f("LOCATION", 0, 23, "Landkreis Bad Kreuznach", 0.85)],
+        policy,
+    )
+    assert d.action == ACTION_ALLOW

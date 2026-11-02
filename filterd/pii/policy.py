@@ -159,12 +159,27 @@ def filter_findings(findings: Iterable[Finding], policy: Policy) -> list[Finding
         if f.text.strip().lower() in policy.allowlist:
             continue
         kept.append(f)
-    return _dedupe(kept)
+    return _dedupe(kept, policy)
 
 
-def _dedupe(findings: list[Finding]) -> list[Finding]:
-    """Bei Ueberlappung gewinnt der Treffer mit hoeherem Score, dann der laengere."""
-    ordered = sorted(findings, key=lambda f: (-f.score, -(f.end - f.start), f.start))
+def _dedupe(findings: list[Finding], policy: Policy) -> list[Finding]:
+    """Aufloesung von Ueberlappungen.
+
+    Entscheidend ist zuerst die Policy-Aktion, nicht der Score: ein
+    deterministischer Treffer wie DE_LICENSE_PLATE (block) muss gewinnen,
+    auch wenn das NER-Modell dieselbe Stelle mit hoeherem Score als LOCATION
+    (allow) markiert. Sonst hebelt das Modell die festen Regeln aus.
+    Danach zaehlen Score, Laenge und Position.
+    """
+    ordered = sorted(
+        findings,
+        key=lambda f: (
+            -_RANK[policy.action_for(f.entity_type)],
+            -f.score,
+            -(f.end - f.start),
+            f.start,
+        ),
+    )
     kept: list[Finding] = []
     for f in ordered:
         if any(f.overlaps(k) for k in kept):
