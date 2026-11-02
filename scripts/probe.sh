@@ -25,7 +25,14 @@ req = urllib.request.Request(
     data=payload,
     headers={"Content-Type": "application/json"},
 )
-d = json.loads(urllib.request.urlopen(req, timeout=30).read())
+try:
+    d = json.loads(urllib.request.urlopen(req, timeout=30).read())
+except Exception as exc:
+    # Haeufigster Fall: der Filter laedt nach einem Rebuild noch die
+    # NLP-Modelle. Ein Traceback hilft dabei niemandem.
+    print("Filter nicht erreichbar: %s" % exc, file=sys.stderr)
+    print("Status pruefen mit: docker compose ps filter", file=sys.stderr)
+    raise SystemExit(1)
 
 print("Anfrage:     %s" % sys.argv[1])
 print("Aktion:      %s" % d["action"])
