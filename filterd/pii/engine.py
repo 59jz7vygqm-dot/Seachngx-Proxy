@@ -10,7 +10,7 @@ from presidio_analyzer import AnalyzerEngine, RecognizerRegistry
 from presidio_analyzer.nlp_engine import NlpEngineProvider
 
 from .policy import Finding
-from .recognizers_de import DE_RECOGNIZERS
+from .recognizers_de import scan_de
 
 log = logging.getLogger("filter.engine")
 
@@ -39,9 +39,6 @@ def get_analyzer() -> AnalyzerEngine:
     registry.load_predefined_recognizers(
         languages=list(SUPPORTED_LANGUAGES), nlp_engine=nlp_engine
     )
-    for rec in DE_RECOGNIZERS:
-        registry.add_recognizer(rec)
-
     analyzer = AnalyzerEngine(
         nlp_engine=nlp_engine,
         registry=registry,
@@ -56,7 +53,7 @@ def analyze(text: str, language: str) -> list[Finding]:
     if language not in SUPPORTED_LANGUAGES:
         language = SUPPORTED_LANGUAGES[0]
     results = get_analyzer().analyze(text=text, language=language)
-    return [
+    findings = [
         Finding(
             entity_type=r.entity_type,
             start=r.start,
@@ -66,3 +63,9 @@ def analyze(text: str, language: str) -> list[Finding]:
         )
         for r in results
     ]
+    # Die festen Regeln laufen GETRENNT und werden absichtlich nicht in die
+    # Presidio-Registry gehaengt: deren interne Konfliktaufloesung geht nach
+    # Score und wuerde sie gegen NER-Treffer verlieren lassen. Die
+    # Rangfolge entscheidet die Policy.
+    findings.extend(scan_de(text))
+    return findings

@@ -183,9 +183,10 @@ eigene Faust und sagt dann Dinge, die der Filter so nicht behauptet.
 make test
 ```
 
-34 Unit-Tests auf Policy-Auswertung, Schwärzung, Ergebnis-Hygiene,
+54 Unit-Tests auf Policy-Auswertung, deutsche Erkenner, Schwärzung,
 Cache-Schlüssel und Log-Modi. Laufen ohne Docker und ohne NLP-Modelle, weil
-`filterd/pii/policy.py` bewusst frei von Presidio-Importen ist.
+`filterd/pii/policy.py` und `filterd/pii/recognizers_de.py` bewusst frei
+von Presidio-Importen sind.
 
 `make verify` prüft zusätzlich gegen den laufenden Stack, ob die
 Netztrennung tatsächlich hält.
@@ -230,7 +231,7 @@ gateway/gw/
 filterd/pii/
   policy.py                 Policy-Auswertung (ohne Presidio, testbar)
   engine.py                 Presidio + spaCy
-  recognizers_de.py         deutsche Regex-Erkenner
+  recognizers_de.py         deutsche Regex-Erkenner (getrennt von Presidio)
 config/policy.yml           Filterregeln
 config/searxng/             SearXNG-Konfiguration (Template)
 config/tinyproxy/           Egress-Proxy
