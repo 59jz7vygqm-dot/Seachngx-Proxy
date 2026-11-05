@@ -135,6 +135,8 @@ def scan_de(text: str) -> list[Finding]:
                     end=m.end(),
                     score=score,
                     text=m.group(0),
+                    source="pattern",
+                    rule=f"regex.de.{rule.entity_type.lower()}",
                 )
             )
     return out

@@ -49,6 +49,18 @@ def get_analyzer() -> AnalyzerEngine:
     return analyzer
 
 
+def _recognizer_of(result) -> str:
+    """Name des Erkenners, der den Treffer gemeldet hat."""
+    meta = getattr(result, "recognition_metadata", None) or {}
+    name = meta.get("recognizer_name") or "unknown"
+    return str(name).replace("Recognizer", "").lower() or "unknown"
+
+
+def _source_of(result) -> str:
+    """'ner' ist probabilistisch, alles andere von Presidio ist musterbasiert."""
+    return "ner" if _recognizer_of(result) == "spacy" else "pattern"
+
+
 def analyze(text: str, language: str) -> list[Finding]:
     if language not in SUPPORTED_LANGUAGES:
         language = SUPPORTED_LANGUAGES[0]
@@ -60,6 +72,8 @@ def analyze(text: str, language: str) -> list[Finding]:
             end=r.end,
             score=float(r.score),
             text=text[r.start : r.end],
+            source=_source_of(r),
+            rule=f"presidio.{_recognizer_of(r)}",
         )
         for r in results
     ]

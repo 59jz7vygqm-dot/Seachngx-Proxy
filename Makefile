@@ -1,4 +1,4 @@
-.PHONY: init up down build logs test verify policy-reload clean
+.PHONY: init up down build logs test verify probe aimon-test policy-reload clean
 
 init:          ## .env und SearXNG-settings.yml anlegen
 	@sh scripts/init.sh
@@ -20,6 +20,12 @@ test:          ## Unit-Tests (ohne Docker, ohne NLP-Modelle)
 
 verify:        ## Integrationspruefung gegen den laufenden Stack
 	@sh scripts/verify.sh
+
+aimon-test:    ## Beispiel-Payload an aimonitor senden (dry_run)
+	@sh scripts/aimon-test.sh
+
+aimon-test-live: ## dasselbe, aber ohne dry_run
+	@sh scripts/aimon-test.sh --live
 
 policy-reload: ## config/policy.yml neu einlesen, ohne Modell-Neustart
 	docker compose exec gateway python -c "\

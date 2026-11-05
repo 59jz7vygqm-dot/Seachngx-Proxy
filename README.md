@@ -177,14 +177,133 @@ curl -sD- -o /dev/null -G --data-urlencode "q=was verdient mein chef" \
 Nicht ueber das LLM testen. Das Modell interpretiert die Blockmeldung auf
 eigene Faust und sagt dann Dinge, die der Filter so nicht behauptet.
 
+## Telemetrie an aimonitor
+
+Standardmäßig **aus**. Leere `AIMON_URL` heißt: kein Worker, kein Versand,
+der Proxy läuft unverändert.
+
+```
+AIMON_URL=http://aimon.lan:8420/api/v1/ingest/privacy
+AIMON_TOKEN=<Token mit Scope ingest>
+AIMON_NODE=proxy-host-01
+```
+
+Selbsttest (sendet mit `dry_run=1`, verfälscht also keine Zähler):
+
+```bash
+make aimon-test
+```
+
+### Was gesendet wird
+
+Alle 10 Sekunden ein Snapshot der kumulativen Zähler plus die seitdem
+angefallenen Eingriffe. Durchgelassene Anfragen **nicht** einzeln — dafür
+sind die Zähler da.
+
+Die Zähler sind kumulativ seit Prozessstart, nie Deltas. aimonitor bildet
+Raten selbst und erkennt einen Neustart am Rücksprung. Nebeneffekt: ein
+Ausfall des Monitorings verliert keine Zahlen, der nächste erfolgreiche
+Snapshot enthält sie wieder.
+
+### Was nicht gesendet wird
+
+| Feld | Status | Grund |
+|---|---|---|
+| `query_raw` | aus (`AIMON_SEND_RAW_QUERIES`) | Hebelt den Zweck des Projekts aus |
+| `query_redacted` | **aus** (`AIMON_SEND_REDACTED_QUERIES`) | siehe unten |
+| `client_id` | **wird nicht gebaut** | kein Session-Schlüssel vorhanden |
+| Treffertext in `matched_spans` | nie | nur Offsets und Typ |
+
+**Warum `query_redacted` standardmäßig aus ist.** Die geschwärzte Fassung
+entsteht in `filterd/pii/policy.py:redact()`, indem jede *erkannte*
+Fundstelle durch `<TYP>` ersetzt wird — keine Sterne, keine Teilmaskierung,
+die Länge wird nicht verraten. Das Verfahren ist sauber. Die Erkennung ist
+es nicht: NER arbeitet probabilistisch und lässt bei kurzen,
+kleingeschriebenen Suchanfragen Namen durch. Eine Anfrage mit zwei Namen,
+von denen einer erkannt wird, ist nach dem Ersetzen immer noch
+personenbezogen. Diese Garantie kann der Filter nicht geben, also bleibt das
+Feld weg. Was bleibt, reicht für ein Dashboard: `category`, `rule`,
+`query_sha256`, `query_len`, `matched_spans`.
+
+Wer es trotzdem will, setzt `AIMON_SEND_REDACTED_QUERIES=true` und
+akzeptiert damit Personenbezug im Dashboard.
+
+**Warum es kein `client_id` gibt.** Ein Pseudonym bräuchte eine Session-ID,
+die mit einem nur im Proxy liegenden Schlüssel gehasht wird. OpenWebUI
+schickt keine. Bliebe die IP-Adresse — die wäre kein Pseudonym, sondern
+genau das, was nirgends auftauchen soll. Also kein Feld.
+
+**`query_sha256`** ist der Hash der *Original*anfrage, damit aimonitor
+wiederkehrende Anfragen erkennt, ohne sie zu kennen. Ehrlich dazu: eine
+kurze Suchanfrage ist durchprobierbar, das ist ein
+Wiedererkennungsmerkmal und keine Anonymisierung. `AIMON_QUERY_HASH_SALT`
+schließt das, macht Hashes zwischen zwei Installationen aber
+unvergleichbar. `AIMON_SEND_QUERY_HASH=false` lässt das Feld weg.
+
+### Woher `rule` kommt
+
+Das Feld unterscheidet einen zu scharfen Filter von echten Personensuchen.
+Jeder Treffer trägt seine Herkunft:
+
+| Quelle | `source` | `rule` |
+|---|---|---|
+| spaCy-NER | `ner` | `presidio.spacy` |
+| Presidio-Muster | `pattern` | `presidio.email`, `presidio.iban`, … |
+| eigene Regex-Regeln | `pattern` | `regex.de.de_license_plate`, … |
+| Denylist | `denylist` | `denylist.relational_person`, … |
+
+`confidence` wird nur bei `source: ner` gesendet. Der Score einer Regex ist
+auf 1.0 gesetzt und wäre als Sicherheitsaussage gelogen.
+
+### Zähler-Identität
+
+`allowed + blocked + redacted + errors = requests` — exakt, nicht ungefähr.
+Jede Anfrage landet in genau einem Kübel, bestimmt durch die
+Filter-Entscheidung.
+
+`upstream_errors_total` ist bewusst **nicht** Teil dieser Summe. Ein Fehler
+von SearXNG trifft eine Anfrage, die der Filter bereits durchgelassen hat —
+sie zählt als `allowed` (oder `redacted`) und zusätzlich als
+Upstream-Fehler. Das ist eine zweite Dimension, kein vierter Kübel.
+Andernfalls wäre dieselbe Anfrage doppelt gezählt.
+
+`errors_total` zählt nur, was der Proxy selbst nicht verarbeiten konnte:
+Filter nicht erreichbar (`filter.unavailable`) und zu lange Anfragen
+(`gateway.max_query_len`). Letzteres ist streng genommen eine Ablehnung,
+kein Fehler — es muss aber in einen der vier Kübel, sonst stimmt die
+Identität nicht.
+
+### Verhalten bei Ausfall
+
+Entscheidungen gehen in eine begrenzte Warteschlange (5000), ein eigener
+Worker sendet. Der Request-Pfad wartet nie auf HTTP und sieht keine
+Telemetrie-Fehler.
+
+Fällt aimonitor aus: Timeout nach 5 s, Backoff 1 → 60 s mit Jitter, der
+Batch bleibt liegen und wird erneut versucht. Läuft die Warteschlange über,
+fallen die **ältesten** Einträge raus und `dropped_total` zählt mit — dieser
+Zähler sagt dir, dass du Einzelmeldungen verpasst hast. Die kumulativen
+Zähler selbst gehen dabei nie verloren.
+
+Nach zehn Minuten Ausfall: die Zähler sind vollständig, von den Einzel-
+meldungen die letzten 5000. `4xx` außer `429` wird nicht wiederholt — ein
+falsches Token heilt kein Wiederholen; der Batch wird verworfen und einmal
+geloggt.
+
+`/healthz` zeigt den Zustand:
+
+```json
+{"telemetry": {"enabled": true, "queued": 12, "backoff_s": 0.0, "last_error": null, "dropped_total": 0}}
+```
+
 ## Tests
 
 ```bash
 make test
 ```
 
-54 Unit-Tests auf Policy-Auswertung, deutsche Erkenner, Schwärzung,
-Cache-Schlüssel und Log-Modi. Laufen ohne Docker und ohne NLP-Modelle, weil
+95 Unit-Tests auf Policy-Auswertung, deutsche Erkenner, Schwärzung,
+Cache-Schlüssel, Log-Modi und Telemetrie. Laufen ohne Docker und ohne NLP-Modelle, weil
 `filterd/pii/policy.py` und `filterd/pii/recognizers_de.py` bewusst frei
 von Presidio-Importen sind.
 
@@ -228,6 +347,9 @@ gateway/gw/
   sanitize.py               Ergebnis-Hygiene
   cache.py                  Hash-Schlüssel, Valkey
   logging_setup.py          Log-Modi für Queries
+  telemetry.py              Zähler, Warteschlange, Versand an aimonitor
+  categories.py             Erkenner-Typ -> Monitoring-Kategorie
+  __main__.py               CLI: --aimon-test
 filterd/pii/
   policy.py                 Policy-Auswertung (ohne Presidio, testbar)
   engine.py                 Presidio + spaCy

@@ -21,6 +21,13 @@ from .config import settings
 from .logging_setup import emit, query_for_log, setup
 from .responses import block_response, empty_response
 from .sanitize import sanitize_results
+from .telemetry import (
+    ACTION_ALLOWED,
+    ACTION_BLOCKED,
+    ACTION_ERROR,
+    ACTION_REDACTED,
+    Telemetry,
+)
 
 setup()
 settings.validate()
@@ -33,13 +40,17 @@ async def lifespan(_: FastAPI):
     state["filter"] = FilterClient(settings.filter_url, settings.filter_timeout)
     state["searx"] = SearxClient(settings.searx_url, settings.upstream_timeout)
     state["cache"] = Cache(settings.valkey_url, settings.cache_ttl)
+    state["telemetry"] = Telemetry(settings)
+    await state["telemetry"].start()
     emit(
         "gateway.start",
         block_response=settings.block_response,
         log_queries=settings.log_queries,
         cache_ttl=settings.cache_ttl,
+        telemetry=state["telemetry"].enabled,
     )
     yield
+    await state["telemetry"].stop()
     await state["filter"].close()
     await state["searx"].close()
     await state["cache"].close()
@@ -60,7 +71,17 @@ async def healthz() -> dict:
         "status": "ok",
         "filter": await state["filter"].healthy(),
         "searxng": await state["searx"].healthy(),
+        "telemetry": state["telemetry"].status(),
     }
+
+
+def _action_of(decision: dict) -> str:
+    """Filter-Aktion auf die Telemetrie-Aktion abbilden.
+
+    'allow' und 'redact' heissen beide: die Anfrage ging raus. Der
+    Unterschied ist, ob sie dabei veraendert wurde.
+    """
+    return ACTION_REDACTED if decision.get("action") == "redact" else ACTION_ALLOWED
 
 
 async def _handle(
@@ -70,11 +91,21 @@ async def _handle(
 ) -> JSONResponse:
     t0 = time.perf_counter()
 
+    tel: Telemetry = state["telemetry"]
+
     q = (q or "").strip()
     if not q:
+        # Zaehlt als durchgelassen: nichts gefiltert, nichts verschickt.
+        tel.record(ACTION_ALLOWED, query="")
         return JSONResponse(empty_response(""))
     if len(q) > settings.max_query_len:
         emit("gateway.reject", request_id=request_id, reason="query_too_long", length=len(q))
+        tel.record(
+            ACTION_ERROR,
+            query=q,
+            category="request_rejected",
+            rule="gateway.max_query_len",
+        )
         raise HTTPException(status_code=413, detail="Suchanfrage zu lang")
 
     language = params.get("language") or settings.default_language
@@ -85,6 +116,12 @@ async def _handle(
         decision = await state["filter"].analyze(q, lang_code)
     except (httpx.HTTPError, ValueError) as exc:
         emit("gateway.filter_unavailable", request_id=request_id, error=str(exc))
+        tel.record(
+            ACTION_ERROR,
+            query=q,
+            category="filter_unavailable",
+            rule="filter.unavailable",
+        )
         raise HTTPException(
             status_code=503,
             detail="Datenschutzfilter nicht erreichbar - Suche abgebrochen",
@@ -104,6 +141,7 @@ async def _handle(
             blocking_types=blocking,
             duration_ms=round((time.perf_counter() - t0) * 1000, 1),
         )
+        tel.record(ACTION_BLOCKED, query=q, decision=decision)
         payload = block_response(redacted, blocking, settings.block_response)
         status = 422 if settings.block_response == "error" else 200
         return JSONResponse(
@@ -129,17 +167,41 @@ async def _handle(
             results=cached.get("number_of_results"),
             duration_ms=round((time.perf_counter() - t0) * 1000, 1),
         )
+        # Cache-Treffer: kein Upstream-Aufruf, also auch keine Upstream-Latenz.
+        tel.record(_action_of(decision), query=q, decision=decision)
         return JSONResponse(
             cached, headers={"X-Privacy-Filter": "cache", "X-Request-Id": request_id}
         )
 
     # 4) Upstream.
+    t_up = time.perf_counter()
     try:
         raw = await state["searx"].search(outbound, params)
     except httpx.HTTPError as exc:
-        emit("gateway.upstream_error", request_id=request_id, error=str(exc))
+        latency = (time.perf_counter() - t_up) * 1000
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        emit(
+            "gateway.upstream_error",
+            request_id=request_id,
+            status=status,
+            error=str(exc),
+        )
+        tel.record(
+            _action_of(decision),
+            query=q,
+            decision=decision,
+            upstream_latency_ms=latency,
+            upstream_status=status,
+        )
+        tel.upstream_failure(
+            query=q,
+            status=status,
+            latency_ms=latency,
+            reason=type(exc).__name__,
+        )
         raise HTTPException(status_code=502, detail="SearXNG nicht erreichbar") from exc
 
+    upstream_ms = (time.perf_counter() - t_up) * 1000
     payload = sanitize_results(raw, settings.max_results, settings.max_content_len)
     payload["query"] = outbound
     await state["cache"].set(key, payload)
@@ -153,6 +215,14 @@ async def _handle(
         findings=finding_types or None,
         results=payload["number_of_results"],
         duration_ms=round((time.perf_counter() - t0) * 1000, 1),
+        upstream_ms=round(upstream_ms, 1),
+    )
+    tel.record(
+        _action_of(decision),
+        query=q,
+        decision=decision,
+        upstream_latency_ms=upstream_ms,
+        upstream_status=200,
     )
     return JSONResponse(
         payload,

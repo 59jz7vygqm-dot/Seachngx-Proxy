@@ -23,13 +23,28 @@ _RANK = {ACTION_ALLOW: 0, ACTION_REDACT: 1, ACTION_BLOCK: 2}
 
 @dataclass(frozen=True)
 class Finding:
-    """Ein Treffer im Eingabetext."""
+    """Ein Treffer im Eingabetext.
+
+    `source` und `rule` sagen, WOHER der Treffer kommt: 'ner' ist
+    probabilistisch, 'pattern' und 'denylist' sind feste Regeln. Das Monitoring
+    braucht diese Unterscheidung, um einen zu scharfen Filter von echten
+    Personensuchen zu trennen - wenn fast alle Treffer aus einer einzigen
+    Regel kommen, sind es Fehlalarme.
+    """
 
     entity_type: str
     start: int
     end: int
     score: float
     text: str
+    source: str = "unknown"
+    rule: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.rule:
+            object.__setattr__(
+                self, "rule", f"{self.source}.{self.entity_type.lower()}"
+            )
 
     def overlaps(self, other: "Finding") -> bool:
         return self.start < other.end and other.start < self.end
@@ -108,6 +123,7 @@ class Decision:
     action: str
     findings: list[Finding]
     blocking_types: list[str]
+    redacting_types: list[str]
     redacted_text: str
 
     @property
@@ -118,6 +134,7 @@ class Decision:
         return {
             "action": self.action,
             "blocking_types": self.blocking_types,
+            "redacting_types": self.redacting_types,
             "redacted_text": self.redacted_text,
             # Bewusst ohne Klartext der Fundstelle: diese Antwort wird geloggt.
             "findings": [
@@ -127,6 +144,8 @@ class Decision:
                     "end": f.end,
                     "score": round(f.score, 3),
                     "length": f.end - f.start,
+                    "source": f.source,
+                    "rule": f.rule,
                 }
                 for f in self.findings
             ],
@@ -145,6 +164,8 @@ def scan_denylist(text: str, policy: Policy) -> list[Finding]:
                     end=m.end(),
                     score=1.0,
                     text=m.group(0),
+                    source="denylist",
+                    rule=f"denylist.{name.lower()}",
                 )
             )
     return out
@@ -202,12 +223,15 @@ def evaluate(text: str, findings: Iterable[Finding], policy: Policy) -> Decision
 
     action = ACTION_ALLOW
     blocking: list[str] = []
+    redacting: list[str] = []
     to_redact: list[Finding] = []
 
     for f in all_findings:
         a = policy.action_for(f.entity_type)
         if a == ACTION_BLOCK:
             blocking.append(f.entity_type)
+        if a == ACTION_REDACT:
+            redacting.append(f.entity_type)
         if a in (ACTION_BLOCK, ACTION_REDACT):
             to_redact.append(f)
         if _RANK[a] > _RANK[action]:
@@ -219,5 +243,6 @@ def evaluate(text: str, findings: Iterable[Finding], policy: Policy) -> Decision
         action=action,
         findings=all_findings,
         blocking_types=sorted(set(blocking)),
+        redacting_types=sorted(set(redacting)),
         redacted_text=redact(text, to_redact),
     )
