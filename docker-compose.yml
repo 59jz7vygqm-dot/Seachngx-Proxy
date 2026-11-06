@@ -18,6 +18,12 @@
 # des Netzes. Wer die harte Trennung zurueck will: 'egress' beim Gateway
 # entfernen und AIMON_URL leeren.
 
+# Fester Projektname. Ohne ihn leitet Compose ihn aus dem Verzeichnisnamen
+# ab - ein umbenanntes Verzeichnis legt dann stillschweigend einen zweiten,
+# vollstaendigen Stack an, inklusive eigener Netze. Die Container des alten
+# halten weiter ihre Ports, und OpenWebUI haengt am Netz des alten.
+name: searxng-privacy-proxy
+
 services:
 
   edge:
