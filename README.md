@@ -13,6 +13,7 @@ Personenbezug erreichen das Internet nicht.
                     └──────────────────┬──────────────────────────┘
                                        │
    ────────────── core (internal: keine Route ins Internet) ───────────────
+                        (gateway ausgenommen, s. u.)
                                        │
                     ┌──────────────────▼──────────────────┐
                     │ gateway                              │──► LOG (JSON)
@@ -43,7 +44,7 @@ Geloggt wird erst *nach* dem Filter.
 | Proxy loggt die eingehende Query | ungefiltertes PII landet dauerhaft auf Platte | Log erst nach dem Filter, Default `redacted` |
 | nur NER | fängt keine IBAN, Steuer-ID, Kennzeichen, Zugangsdaten | Regex-Erkenner **und** NER |
 | alle Entitäten entfernen | Suche wird unbrauchbar, System wird umgangen | Orte/Orgs erlaubt, Personen/Kennungen blockiert |
-| WebProxy als vorgesehener Weg | LLM-Tools gehen drumherum | Netztrennung: `core` ist `internal` |
+| WebProxy als vorgesehener Weg | LLM-Tools gehen drumherum | Netztrennung: `core` ist `internal` (Gateway ausgenommen, s. u.) |
 | kein Cache | jede Wiederholung geht erneut raus | Valkey-Cache auf Hash der gefilterten Query |
 
 ## Entscheidungen, die hier getroffen wurden
@@ -63,12 +64,19 @@ Kennungen, Anschriften. Anpassbar in `config/policy.yml`.
 **Fail closed.** Ist der Filter nicht erreichbar, antwortet das Gateway mit
 503 und sucht nicht. Keine Suche ist besser als eine ungefilterte.
 
-**Die Trennung wird erzwungen, nicht nur vorgesehen.** `gateway`, `filter`,
-`searxng` und `valkey` hängen ausschließlich im Docker-Netz `core`
-(`internal: true`) und haben keine Route ins Internet. Der einzige Ausgang
-ist `webproxy`. Der Dienst, der die ungefilterte Anfrage sieht, kann sie
-technisch nicht verschicken; der Dienst, der ins Internet darf, sieht nur
-Gefiltertes. `scripts/verify.sh` prüft genau das nach.
+**Die Trennung wird erzwungen, nicht nur vorgesehen.** `filter`, `searxng`
+und `valkey` hängen ausschließlich im Docker-Netz `core` (`internal: true`)
+und haben keine Route ins Internet. Suchanfragen verlassen den Stack
+ausschließlich über `webproxy`, und der sieht nur bereits Gefiltertes.
+`scripts/verify.sh` prüft das nach.
+
+**Einschränkung, seit die Telemetrie dazugekommen ist.** Der `gateway` hängt
+zusätzlich im Netz `egress`, weil er aimonitor erreichen muss. Damit hat
+ausgerechnet der Dienst vollen Netzzugang, der die *ungefilterte* Anfrage
+sieht. Dass er nur Zähler verschickt, ist seither eine Eigenschaft des
+Codes, nicht des Netzes. Wer die harte Trennung zurück will: `AIMON_URL`
+leeren und `egress` beim Gateway aus der `docker-compose.yml` entfernen —
+`verify.sh` Punkt 5 prüft dann wieder scharf statt nur zu melden.
 
 ## Start
 
@@ -181,6 +189,10 @@ eigene Faust und sagt dann Dinge, die der Filter so nicht behauptet.
 
 Standardmäßig **aus**. Leere `AIMON_URL` heißt: kein Worker, kein Versand,
 der Proxy läuft unverändert.
+
+Voraussetzung: der `gateway` muss aimonitor erreichen können, hängt dafür im
+Netz `egress` und hat damit vollen Netzzugang. Siehe die Einschränkung oben
+— das ist der Preis der Telemetrie.
 
 ```
 AIMON_URL=http://aimon.lan:8420/api/v1/ingest/privacy
@@ -335,6 +347,11 @@ Ehrlich gesagt, damit niemand mehr erwartet als da ist:
   nicht in der Liste steht.
 - **Der Stack schützt nur den Weg durch ihn hindurch.** Jedes andere Tool
   deines LLM, das selbst HTTP spricht, geht daran vorbei.
+- **Der Gateway hat Netzzugang, solange die Telemetrie an ist.** Er sieht
+  die ungefilterte Anfrage und könnte sie technisch verschicken. Dass er es
+  nicht tut, garantiert der Code (`telemetry.py` sendet Zähler und
+  Metadaten, kein `query_raw` ohne ausdrücklichen Schalter), nicht mehr das
+  Netz.
 
 ## Struktur
 

@@ -1,15 +1,22 @@
 # Privacy-Proxy zwischen lokalem LLM (OpenWebUI) und dem Internet.
 #
 # Durchsetzung passiert ueber die Netze, nicht ueber Konvention:
-#   core    internal -> keine Route ins Internet. Gateway, Filter, SearXNG,
-#                       Valkey haengen ausschliesslich hier.
-#   egress  bridge   -> nur webproxy. Einziger Weg nach draussen.
+#   core    internal -> keine Route ins Internet. Filter, SearXNG und Valkey
+#                       haengen ausschliesslich hier.
+#   egress  bridge   -> webproxy und gateway. Weg nach draussen.
 #   edge    bridge   -> nur edge (nginx). Nimmt Anfragen von OpenWebUI an,
 #                       baut selbst nie eine Verbindung nach aussen auf.
 #
-# Folge: Der Dienst, der die ungefilterte Anfrage sieht (gateway), kann sie
-# technisch nicht ins Internet schicken. Der Dienst, der ins Internet darf
-# (webproxy), sieht nur bereits gefilterte Anfragen.
+# Folge: Suchanfragen verlassen den Stack ausschliesslich ueber webproxy, und
+# der sieht nur bereits gefilterte Anfragen. Filter, SearXNG und Valkey haben
+# gar keine Route.
+#
+# Der Gateway haengt zusaetzlich im egress-Netz, damit er Telemetrie an
+# aimonitor senden kann. Damit hat ausgerechnet der Dienst, der die
+# ungefilterte Anfrage sieht, vollen Netzzugang. Dass er nur Zaehler
+# verschickt, ist seit dieser Aenderung eine Eigenschaft des Codes, keine
+# des Netzes. Wer die harte Trennung zurueck will: 'egress' beim Gateway
+# entfernen und AIMON_URL leeren.
 
 services:
 
@@ -62,6 +69,12 @@ services:
       AIMON_QUERY_HASH_SALT: ${AIMON_QUERY_HASH_SALT:-}
     networks:
       - core
+      # Fuer die Telemetrie an aimonitor. ACHTUNG: damit hat der Gateway
+      # vollen Netzzugang - also der Dienst, der die UNGEFILTERTE Anfrage
+      # sieht. Die urspruengliche Zusage "kann sie technisch nicht
+      # verschicken" gilt damit nicht mehr; es bleibt eine organisatorische
+      # Zusicherung. Ohne Telemetrie diese Zeile entfernen.
+      - egress
     depends_on:
       filter:
         condition: service_healthy

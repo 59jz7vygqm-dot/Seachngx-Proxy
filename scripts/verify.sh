@@ -11,6 +11,15 @@ fails=0
 ok()   { printf '  OK    %s\n' "$1"; }
 fail() { printf '  FAIL  %s\n' "$1"; fails=$((fails+1)); }
 skip() { printf '  SKIP  %s\n' "$1"; }
+note() { printf '  HINW  %s\n' "$1"; }
+
+# Telemetrie an aimonitor braucht Netzzugang fuer den Gateway. Ist sie
+# eingeschaltet, ist Pruefung 5 bewusst aufgehoben - das wird gemeldet,
+# nicht verschwiegen.
+AIMON_ON=no
+if [ -f .env ] && grep -qE '^AIMON_URL=.+' .env; then
+    AIMON_ON=yes
+fi
 
 # Die Netzpruefungen brauchen Zugriff auf den Docker-Socket. Ohne ihn wird
 # NICHT stillschweigend "bestanden" gemeldet, sondern uebersprungen.
@@ -63,7 +72,7 @@ case "$hdr" in
 esac
 
 if [ -z "$DOCKER" ]; then
-    echo "5) Gateway hat KEINEN Weg ins Internet"
+    echo "5) Netzzugang des Gateways"
     skip "kein Zugriff auf den Docker-Socket"
     echo "6) SearXNG kommt nur ueber den WebProxy raus"
     skip "kein Zugriff auf den Docker-Socket"
@@ -72,7 +81,7 @@ if [ -z "$DOCKER" ]; then
 else
     # Der Container druckt OPEN oder CLOSED. Alles andere bedeutet, dass die
     # Pruefung nicht lief - das wird als FAIL gewertet, nicht als Erfolg.
-    echo "5) Gateway hat KEINEN Weg ins Internet"
+    echo "5) Netzzugang des Gateways"
     out=$(in_container gateway python -c "
 import socket
 socket.setdefaulttimeout(5)
@@ -82,8 +91,14 @@ try:
 except Exception:
     print('CLOSED')
 ")
-    case "$out" in
+    case "$out$AIMON_ON" in
         *CLOSED*) ok "Gateway kommt nicht raus" ;;
+        *OPEN*yes)
+            note "Gateway erreicht das Internet - gewollt, weil Telemetrie an"
+            note "      ist. Der Dienst, der die UNGEFILTERTE Anfrage sieht, hat"
+            note "      damit vollen Netzzugang. Zum Zurueckdrehen: AIMON_URL"
+            note "      leeren und 'egress' beim Gateway aus der compose nehmen."
+            ;;
         *OPEN*)   fail "Gateway erreicht das Internet - Netztrennung ist kaputt" ;;
         *)        fail "Pruefung nicht ausfuehrbar (Ausgabe: '$out')" ;;
     esac
