@@ -5,6 +5,13 @@ set -u
 
 cd "$(dirname "$0")/.."
 
+# Werte aus der .env uebernehmen, sofern nicht schon in der Umgebung.
+# Sonst sucht das Skript auf 127.0.0.1, waehrend der Port z. B. auf der
+# Docker-Bridge 172.17.0.1 liegt.
+env_get() { [ -f .env ] && sed -n "s/^$1=//p" .env | tail -1; }
+EDGE_BIND="${EDGE_BIND:-$(env_get EDGE_BIND)}"
+EDGE_PORT="${EDGE_PORT:-$(env_get EDGE_PORT)}"
+
 URL="http://${EDGE_BIND:-127.0.0.1}:${EDGE_PORT:-8888}"
 fails=0
 
