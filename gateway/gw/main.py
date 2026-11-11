@@ -204,7 +204,13 @@ async def _handle(
     upstream_ms = (time.perf_counter() - t_up) * 1000
     payload = sanitize_results(raw, settings.max_results, settings.max_content_len)
     payload["query"] = outbound
-    await state["cache"].set(key, payload)
+
+    # Leere Ergebnisse NICHT cachen. Sie entstehen fast immer durch eine
+    # voruebergehende Stoerung - Rate-Limit einer Engine, Captcha-Wall,
+    # Egress kurz weg. Gecacht blieben sie die volle TTL kleben, und der
+    # Nutzer sieht weiter nichts, obwohl die Stoerung laengst vorbei ist.
+    if payload["number_of_results"] > 0:
+        await state["cache"].set(key, payload)
 
     emit(
         "gateway.hit",
