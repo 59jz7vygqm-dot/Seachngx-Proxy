@@ -12,6 +12,9 @@ env_get() { [ -f .env ] && sed -n "s/^$1=//p" .env | tail -1; }
 EDGE_BIND="${EDGE_BIND:-$(env_get EDGE_BIND)}"
 EDGE_PORT="${EDGE_PORT:-$(env_get EDGE_PORT)}"
 
+# 0.0.0.0 heisst "alle Interfaces" und ist keine Zieladresse.
+[ "$EDGE_BIND" = "0.0.0.0" ] && EDGE_BIND=127.0.0.1
+
 URL="http://${EDGE_BIND:-127.0.0.1}:${EDGE_PORT:-8888}"
 fails=0
 
